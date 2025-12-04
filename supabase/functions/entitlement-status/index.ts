@@ -12,7 +12,7 @@ const corsHeaders = {
 export default async function handler(req: Request) {
   try {
     if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
+      return new Response("ok", { status: 200, headers: corsHeaders });
     }
 
     if (!supabaseUrl || !supabaseKey) {

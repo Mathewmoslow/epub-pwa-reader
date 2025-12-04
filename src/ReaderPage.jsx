@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ePub from "epubjs";
 import { supabase } from "./supabaseClient";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 const LS_KEYS = {
   settings: (bookId) => `reader_settings:${bookId}`,
@@ -122,8 +123,12 @@ export default function ReaderPage({
       const url = new URL(bookUrlEndpoint);
       url.searchParams.set("bookId", bookId);
       const res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          apikey: SUPABASE_ANON_KEY || "",
+        },
         mode: "cors",
+        cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -158,8 +163,12 @@ export default function ReaderPage({
         const url = new URL(entitlementEndpoint);
         url.searchParams.set("bookId", bookId);
         const res = await fetch(url.toString(), {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            apikey: SUPABASE_ANON_KEY || "",
+          },
           mode: "cors",
+          cache: "no-store",
         });
         const data = await res.json().catch(() => ({}));
         if (!active) return;
