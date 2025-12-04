@@ -27,13 +27,15 @@ function jsonResponse(body: Record<string, unknown>, status = 200, origin: strin
 
 export default async function handler(req: Request) {
   try {
-    const corsHeaders = buildCorsHeaders(req.headers.get("origin"));
+    const origin = req.headers.get("origin");
+    const corsHeaders = buildCorsHeaders(origin);
+
     if (req.method === "OPTIONS") {
       return new Response("ok", { status: 200, headers: corsHeaders });
     }
 
     if (!supabaseUrl || !supabaseKey) {
-      return jsonResponse({ active: false, error: "missing env" }, 500, req.headers.get("origin"));
+      return jsonResponse({ active: false, error: "missing env" }, 500, origin);
     }
 
     if (req.method !== "GET") {
@@ -42,13 +44,13 @@ export default async function handler(req: Request) {
 
     const bookId = new URL(req.url).searchParams.get("bookId");
     if (!bookId) {
-      return jsonResponse({ active: false, error: "missing bookId" }, 400, req.headers.get("origin"));
+      return jsonResponse({ active: false, error: "missing bookId" }, 400, origin);
     }
 
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.replace(/bearer /i, "").trim();
     if (!token) {
-      return jsonResponse({ active: false, error: "missing token" }, 401, req.headers.get("origin"));
+      return jsonResponse({ active: false, error: "missing token" }, 401, origin);
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -56,7 +58,7 @@ export default async function handler(req: Request) {
     });
     const { data: userResp, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userResp?.user) {
-      return jsonResponse({ active: false, error: "invalid user", detail: userError?.message }, 401, req.headers.get("origin"));
+      return jsonResponse({ active: false, error: "invalid user", detail: userError?.message }, 401, origin);
     }
 
     const uid = userResp.user.id;
@@ -68,11 +70,11 @@ export default async function handler(req: Request) {
       .maybeSingle();
 
     if (error) {
-      return jsonResponse({ active: false, error: "db error", detail: error.message }, 500, req.headers.get("origin"));
+      return jsonResponse({ active: false, error: "db error", detail: error.message }, 500, origin);
     }
 
     const active = data?.active === true;
-    return jsonResponse({ active, checkedAt: new Date().toISOString() }, 200, req.headers.get("origin"));
+    return jsonResponse({ active, checkedAt: new Date().toISOString() }, 200, origin);
   } catch (err) {
     return jsonResponse({ active: false, error: "exception", detail: `${err}` }, 500, req.headers.get("origin"));
   }
