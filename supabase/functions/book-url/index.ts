@@ -5,20 +5,37 @@ const supabaseKey = Deno.env.get("SERVICE_ROLE_KEY");
 const bucket = Deno.env.get("BOOKS_BUCKET") || "books";
 const signedSeconds = Number(Deno.env.get("SIGNED_EXP_SECONDS") || 600);
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-};
+function buildCorsHeaders(origin: string | null) {
+  const allowOrigin = origin || "*";
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Credentials": "true",
+    Vary: "Origin",
+  };
+}
+
+function jsonResponse(body: Record<string, unknown>, status = 200, origin: string | null = null) {
+  const corsHeaders = buildCorsHeaders(origin);
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
+}
 
 export default async function handler(req: Request) {
   try {
+    const corsHeaders = buildCorsHeaders(req.headers.get("origin"));
     if (req.method === "OPTIONS") {
       return new Response("ok", { status: 200, headers: corsHeaders });
     }
 
     if (!supabaseUrl || !supabaseKey) {
-      return Response.json({ error: "missing env" }, { status: 500, headers: corsHeaders });
+      return jsonResponse({ error: "missing env" }, 500, req.headers.get("origin"));
     }
 
     if (req.method !== "GET") {
@@ -27,13 +44,13 @@ export default async function handler(req: Request) {
 
     const bookId = new URL(req.url).searchParams.get("bookId");
     if (!bookId) {
-      return Response.json({ error: "missing bookId" }, { status: 400, headers: corsHeaders });
+      return jsonResponse({ error: "missing bookId" }, 400, req.headers.get("origin"));
     }
 
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.replace(/bearer /i, "").trim();
     if (!token) {
-      return Response.json({ error: "missing token" }, { status: 401, headers: corsHeaders });
+      return jsonResponse({ error: "missing token" }, 401, req.headers.get("origin"));
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -41,7 +58,7 @@ export default async function handler(req: Request) {
     });
     const { data: userResp, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userResp?.user) {
-      return Response.json({ error: "invalid user", detail: userError?.message }, { status: 401, headers: corsHeaders });
+      return jsonResponse({ error: "invalid user", detail: userError?.message }, 401, req.headers.get("origin"));
     }
 
     const uid = userResp.user.id;
@@ -52,8 +69,8 @@ export default async function handler(req: Request) {
       .eq("book_id", bookId)
       .maybeSingle();
 
-    if (entErr) return Response.json({ error: "db error", detail: entErr.message }, { status: 500, headers: corsHeaders });
-    if (!ent?.active) return Response.json({ error: "revoked" }, { status: 403, headers: corsHeaders });
+    if (entErr) return jsonResponse({ error: "db error", detail: entErr.message }, 500, req.headers.get("origin"));
+    if (!ent?.active) return jsonResponse({ error: "revoked" }, 403, req.headers.get("origin"));
 
     const { data: book, error: bookErr } = await supabase
       .from("books")
@@ -61,9 +78,9 @@ export default async function handler(req: Request) {
       .eq("id", bookId)
       .maybeSingle();
 
-    if (bookErr) return Response.json({ error: "db error", detail: bookErr.message }, { status: 500, headers: corsHeaders });
+    if (bookErr) return jsonResponse({ error: "db error", detail: bookErr.message }, 500, req.headers.get("origin"));
     if (!book?.storage_path) {
-      return Response.json({ error: "book missing" }, { status: 404, headers: corsHeaders });
+      return jsonResponse({ error: "book missing" }, 404, req.headers.get("origin"));
     }
 
     const { data: signed, error: signErr } = await supabase.storage
@@ -71,11 +88,11 @@ export default async function handler(req: Request) {
       .createSignedUrl(book.storage_path, signedSeconds);
 
     if (signErr || !signed?.signedUrl) {
-      return Response.json({ error: "sign failed", detail: signErr?.message }, { status: 500, headers: corsHeaders });
+      return jsonResponse({ error: "sign failed", detail: signErr?.message }, 500, req.headers.get("origin"));
     }
 
-    return Response.json({ url: signed.signedUrl, expiresIn: signedSeconds }, { headers: corsHeaders });
+    return jsonResponse({ url: signed.signedUrl, expiresIn: signedSeconds }, 200, req.headers.get("origin"));
   } catch (err) {
-    return Response.json({ error: "exception", detail: `${err}` }, { status: 500, headers: corsHeaders });
+    return jsonResponse({ error: "exception", detail: `${err}` }, 500, req.headers.get("origin"));
   }
 }
