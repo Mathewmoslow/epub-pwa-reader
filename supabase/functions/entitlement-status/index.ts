@@ -1,12 +1,14 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.48.0";
 
-const supabaseUrl = Deno.env.get("PROJECT_URL");
-const supabaseKey = Deno.env.get("SERVICE_ROLE_KEY");
-const ALLOW_ORIGIN = "https://epub-pwa-reader.vercel.app";
-
-function corsHeaders() {
+function buildCorsHeaders(origin: string | null): Record<string, string> {
+  const allowedOrigins = [
+    "https://epub-pwa-reader.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ];
+  const allowOrigin = origin && allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
   return {
-    "Access-Control-Allow-Origin": ALLOW_ORIGIN,
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Credentials": "true",
@@ -14,50 +16,53 @@ function corsHeaders() {
   };
 }
 
-function jsonResponse(body: Record<string, unknown>, status = 200) {
+function jsonResponse(body: Record<string, unknown>, status: number, corsHeaders: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      ...corsHeaders(),
-      "Content-Type": "application/json",
-    },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-export default async function handler(req: Request) {
+Deno.serve(async (req: Request): Promise<Response> => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = buildCorsHeaders(origin);
+
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { status: 200, headers: corsHeaders() });
-    }
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!supabaseUrl || !supabaseKey) {
-      return jsonResponse({ active: false, error: "missing env" }, 500);
+      console.error("Missing env: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+      return jsonResponse({ active: false, error: "server config error" }, 500, corsHeaders);
     }
 
-    if (req.method !== "GET") {
-      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders() });
-    }
-
-    const bookId = new URL(req.url).searchParams.get("bookId");
+    const url = new URL(req.url);
+    const bookId = url.searchParams.get("bookId");
     if (!bookId) {
-      return jsonResponse({ active: false, error: "missing bookId" }, 400);
+      return jsonResponse({ active: false, error: "missing bookId param" }, 400, corsHeaders);
     }
 
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.replace(/bearer /i, "").trim();
+    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+    const token = authHeader?.replace(/Bearer /i, "");
     if (!token) {
-      return jsonResponse({ active: false, error: "missing token" }, 401);
+      console.error("Missing auth header");
+      return jsonResponse({ active: false, error: "missing auth header" }, 401, corsHeaders);
     }
 
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    });
+    const supabase = createClient(supabaseUrl, supabaseKey);
     const { data: userResp, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userResp?.user) {
-      return jsonResponse({ active: false, error: "invalid user", detail: userError?.message }, 401);
+      console.error("User verification failed:", userError?.message);
+      return jsonResponse({ active: false, error: "invalid user", detail: userError?.message }, 401, corsHeaders);
     }
 
     const uid = userResp.user.id;
+    console.log(`Checking entitlement for user ${uid}, book ${bookId}`);
+
     const { data, error } = await supabase
       .from("entitlements")
       .select("active")
@@ -66,12 +71,16 @@ export default async function handler(req: Request) {
       .maybeSingle();
 
     if (error) {
-      return jsonResponse({ active: false, error: "db error", detail: error.message }, 500);
+      console.error("DB query error:", error.message);
+      return jsonResponse({ active: false, error: "db error", detail: error.message }, 500, corsHeaders);
     }
 
     const active = data?.active === true;
-    return jsonResponse({ active, checkedAt: new Date().toISOString() });
+    console.log(`Entitlement result: active=${active}`);
+
+    return jsonResponse({ active, checkedAt: new Date().toISOString() }, 200, corsHeaders);
   } catch (err) {
-    return jsonResponse({ active: false, error: "exception", detail: `${err}` }, 500);
+    console.error("Exception in entitlement-status:", err);
+    return jsonResponse({ active: false, error: "exception", detail: String(err) }, 500, corsHeaders);
   }
-}
+});

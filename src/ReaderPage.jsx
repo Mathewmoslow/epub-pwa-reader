@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ePub from "epubjs";
 import { supabase } from "./supabaseClient";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+import {
+  checkEntitlement,
+  getBookUrl,
+  getEntitledBookUrl,
+} from "./services/entitlementService";
 
 const LS_KEYS = {
   settings: (bookId) => `reader_settings:${bookId}`,
@@ -117,30 +121,14 @@ export default function ReaderPage({
   useEffect(() => {
     const fetchSigned = async () => {
       if (!bookUrlEndpoint) return;
-      const token = authToken;
-      if (!token) return;
-      setBookError(null);
-      const url = new URL(bookUrlEndpoint);
-      url.searchParams.set("bookId", bookId);
-      const res = await fetch(url.toString(), {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          apikey: SUPABASE_ANON_KEY || "",
-        },
-        mode: "cors",
-        cache: "no-store",
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        console.error("book-url failed", res.status, data);
+      const result = await getBookUrl(bookId);
+      if (result.error) {
         setEpubUrl(null);
-        setBookError(data.error || res.statusText || "Book URL error");
-        // If revoked, also lock.
-        if (res.status === 403) setLocked(true);
+        setBookError(result.error);
         return;
       }
       setBookError(null);
-      setEpubUrl(data.url);
+      setEpubUrl(result.url);
     };
     fetchSigned();
   }, [bookId, bookUrlEndpoint, accessToken]);
@@ -148,44 +136,15 @@ export default function ReaderPage({
   useEffect(() => {
     let active = true;
     async function run() {
-      if (!entitlementEndpoint) {
-        setEntitlementError("Missing entitlement endpoint");
+      const data = await checkEntitlement(bookId);
+      if (!active) return;
+      if (data.error) {
+        setEntitlementError(data.error);
         setLocked(true);
         return;
       }
-      const token = authToken;
-      if (!token) {
-        setEntitlementError("Not authenticated yet");
-        setLocked(true);
-        return;
-      }
-      try {
-        const url = new URL(entitlementEndpoint);
-        url.searchParams.set("bookId", bookId);
-        const res = await fetch(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            apikey: SUPABASE_ANON_KEY || "",
-          },
-          mode: "cors",
-          cache: "no-store",
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!active) return;
-        if (!res.ok) {
-          console.error("entitlement-status failed", res.status, data);
-          setEntitlementError(data.error || res.statusText || "Entitlement error");
-          setLocked(true);
-          return;
-        }
-        setEntitlementError(null);
-        setLocked(!data.active);
-      } catch (err) {
-        if (!active) return;
-        console.error("entitlement-status exception", err);
-        setEntitlementError(String(err));
-        setLocked(true);
-      }
+      setEntitlementError(null);
+      setLocked(!data.active);
     }
 
     run();
@@ -519,22 +478,21 @@ export default function ReaderPage({
           <div className="lockedCard" style={{ borderColor: "rgba(120,120,140,0.25)" }}>
             <div className="lockedTitle">Loading book…</div>
             <div className="lockedText" style={{ color: tv.muted }}>
-              {bookError || "Requesting access."}
-            </div>
-            {bookError ? (
-              <div className="lockedActions">
-                <button
-                  className="btn"
-                  onClick={() => {
-                    setEpubUrl(null);
-                    setBookError(null);
-                    // trigger fetchSigned again by bumping accessToken dependency; simplest: call window.location.reload()
-                    window.location.reload();
-                  }}
-                >
-                  Retry
-                </button>
-              </div>
+      {bookError || "Requesting access."}
+    </div>
+    {bookError ? (
+      <div className="lockedActions">
+        <button
+          className="btn"
+          onClick={() => {
+            setEpubUrl(null);
+            setBookError(null);
+            window.location.reload();
+          }}
+        >
+          Retry
+        </button>
+      </div>
             ) : null}
           </div>
         </div>

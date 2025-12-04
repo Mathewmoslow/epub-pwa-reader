@@ -1,14 +1,16 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.48.0";
 
-const supabaseUrl = Deno.env.get("PROJECT_URL");
-const supabaseKey = Deno.env.get("SERVICE_ROLE_KEY");
-const bucket = Deno.env.get("BOOKS_BUCKET") || "books";
-const signedSeconds = Number(Deno.env.get("SIGNED_EXP_SECONDS") || 600);
-const ALLOW_ORIGIN = "https://epub-pwa-reader.vercel.app";
+const SIGNED_URL_EXPIRY_SECONDS = 3600; // 1 hour
 
-function corsHeaders() {
+function buildCorsHeaders(origin: string | null): Record<string, string> {
+  const allowedOrigins = [
+    "https://epub-pwa-reader.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ];
+  const allowOrigin = origin && allowedOrigins.includes(origin) ? origin : allowedOrigins[0];
   return {
-    "Access-Control-Allow-Origin": ALLOW_ORIGIN,
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Credentials": "true",
@@ -16,50 +18,53 @@ function corsHeaders() {
   };
 }
 
-function jsonResponse(body: Record<string, unknown>, status = 200) {
+function jsonResponse(body: Record<string, unknown>, status: number, corsHeaders: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      ...corsHeaders(),
-      "Content-Type": "application/json",
-    },
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-export default async function handler(req: Request) {
+Deno.serve(async (req: Request): Promise<Response> => {
+  const origin = req.headers.get("origin");
+  const corsHeaders = buildCorsHeaders(origin);
+
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
   try {
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { status: 200, headers: corsHeaders() });
-    }
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!supabaseUrl || !supabaseKey) {
-      return jsonResponse({ error: "missing env" }, 500);
+      console.error("Missing env: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+      return jsonResponse({ error: "server config error" }, 500, corsHeaders);
     }
 
-    if (req.method !== "GET") {
-      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders() });
-    }
-
-    const bookId = new URL(req.url).searchParams.get("bookId");
+    const url = new URL(req.url);
+    const bookId = url.searchParams.get("bookId");
     if (!bookId) {
-      return jsonResponse({ error: "missing bookId" }, 400);
+      return jsonResponse({ error: "missing bookId param" }, 400, corsHeaders);
     }
 
-    const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.replace(/bearer /i, "").trim();
+    const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+    const token = authHeader?.replace(/Bearer /i, "");
     if (!token) {
-      return jsonResponse({ error: "missing token" }, 401);
+      console.error("Missing auth header");
+      return jsonResponse({ error: "missing auth header" }, 401, corsHeaders);
     }
 
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    });
+    const supabase = createClient(supabaseUrl, supabaseKey);
     const { data: userResp, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userResp?.user) {
-      return jsonResponse({ error: "invalid user", detail: userError?.message }, 401);
+      console.error("User verification failed:", userError?.message);
+      return jsonResponse({ error: "invalid user", detail: userError?.message }, 401, corsHeaders);
     }
 
     const uid = userResp.user.id;
+    console.log(`Generating book URL for user ${uid}, book ${bookId}`);
+
     const { data: ent, error: entErr } = await supabase
       .from("entitlements")
       .select("active")
@@ -67,8 +72,15 @@ export default async function handler(req: Request) {
       .eq("book_id", bookId)
       .maybeSingle();
 
-    if (entErr) return jsonResponse({ error: "db error", detail: entErr.message }, 500);
-    if (!ent?.active) return jsonResponse({ error: "revoked" }, 403);
+    if (entErr) {
+      console.error("Entitlement query error:", entErr.message);
+      return jsonResponse({ error: "db error", detail: entErr.message }, 500, corsHeaders);
+    }
+
+    if (!ent?.active) {
+      console.log("User does not have active entitlement");
+      return jsonResponse({ error: "not entitled" }, 403, corsHeaders);
+    }
 
     const { data: book, error: bookErr } = await supabase
       .from("books")
@@ -76,21 +88,28 @@ export default async function handler(req: Request) {
       .eq("id", bookId)
       .maybeSingle();
 
-    if (bookErr) return jsonResponse({ error: "db error", detail: bookErr.message }, 500);
+    if (bookErr) {
+      console.error("Book query error:", bookErr.message);
+      return jsonResponse({ error: "db error", detail: bookErr.message }, 500, corsHeaders);
+    }
+
     if (!book?.storage_path) {
-      return jsonResponse({ error: "book missing" }, 404);
+      return jsonResponse({ error: "book not found" }, 404, corsHeaders);
     }
 
     const { data: signed, error: signErr } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(book.storage_path, signedSeconds);
+      .from("books")
+      .createSignedUrl(book.storage_path, SIGNED_URL_EXPIRY_SECONDS);
 
     if (signErr || !signed?.signedUrl) {
-      return jsonResponse({ error: "sign failed", detail: signErr?.message }, 500);
+      console.error("Signed URL error:", signErr?.message);
+      return jsonResponse({ error: "sign failed", detail: signErr?.message }, 500, corsHeaders);
     }
 
-    return jsonResponse({ url: signed.signedUrl, expiresIn: signedSeconds });
+    console.log("Generated signed URL successfully");
+    return jsonResponse({ url: signed.signedUrl, expiresIn: SIGNED_URL_EXPIRY_SECONDS }, 200, corsHeaders);
   } catch (err) {
-    return jsonResponse({ error: "exception", detail: `${err}` }, 500);
+    console.error("Exception in book-url:", err);
+    return jsonResponse({ error: "exception", detail: String(err) }, 500, corsHeaders);
   }
-}
+});
