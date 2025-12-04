@@ -6,7 +6,8 @@ const SIGNED_URL_EXPIRY_SECONDS = 3600; // 1 hour
 function buildCorsHeaders(origin: string | null): Record<string, string> {
   // Check if origin is allowed
   const isAllowed = origin && (
-    origin.endsWith(".vercel.app") ||  // All Vercel preview deployments
+    origin.endsWith(".vercel.app") || // All Vercel preview deployments
+    origin === "https://epub.mathewmoslow.com" ||
     origin === "http://localhost:5173" ||
     origin === "http://localhost:3000"
   );

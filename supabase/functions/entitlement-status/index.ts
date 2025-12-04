@@ -4,7 +4,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.48.0";
 function buildCorsHeaders(origin: string | null): Record<string, string> {
   // Check if origin is allowed
   const isAllowed = origin && (
-    origin.endsWith(".vercel.app") ||  // All Vercel preview deployments
+    origin.endsWith(".vercel.app") || // All Vercel preview deployments
+    origin === "https://epub.mathewmoslow.com" ||
     origin === "http://localhost:5173" ||
     origin === "http://localhost:3000"
   );
